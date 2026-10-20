@@ -1,21 +1,56 @@
 'use client';
 
-import { useState, useRef, useEffect } from 'react';
-import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from 'recharts';
-import { kpis, cashFlow, transactions, products } from '../lib/demoData';
+import { useEffect, useState, useRef } from 'react';
+import { supabase } from '../lib/supabase';
 
 function formatEur(n: number) {
   return n.toLocaleString('sk-SK', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + ' €';
 }
 
 export default function App() {
-  const [tab, setTab] = useState<'dashboard' | 'market'>('dashboard');
+  const [user, setUser] = useState<any>(null);
+  const [loading, setLoading] = useState(true);
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [msg, setMsg] = useState('');
+  const [err, setErr] = useState(false);
+
+  const [tab, setTab] = useState<'dashboard' | 'market' | 'classes'>('classes');
   const [profileOpen, setProfileOpen] = useState(false);
   const [notifOpen, setNotifOpen] = useState(false);
-  const [query, setQuery] = useState('');
-  const [type, setType] = useState<'all' | 'system' | 'firm'>('all');
   const profileRef = useRef<HTMLDivElement>(null);
   const notifRef = useRef<HTMLDivElement>(null);
+
+  const [classes, setClasses] = useState<any[]>([]);
+  const [selectedClass, setSelectedClass] = useState('');
+  const [className, setClassName] = useState('');
+  const [joinCode, setJoinCode] = useState('');
+  const [products, setProducts] = useState<any[]>([]);
+  const [firms, setFirms] = useState<any[]>([]);
+  const [listings, setListings] = useState<any[]>([]);
+
+  useEffect(() => {
+    supabase.auth.getUser().then(({ data }) => {
+      setUser(data.user);
+      setLoading(false);
+    });
+    const { data: sub } = supabase.auth.onAuthStateChange((_e, session) => {
+      setUser(session?.user ?? null);
+    });
+    return () => sub.subscription.unsubscribe();
+  }, []);
+
+  useEffect(() => {
+    if (user) loadClasses();
+  }, [user]);
+
+  useEffect(() => {
+    if (selectedClass) {
+      loadProducts();
+      loadFirms();
+      loadListings();
+    }
+  }, [selectedClass]);
 
   useEffect(() => {
     function handleClick(e: MouseEvent) {
@@ -26,73 +61,117 @@ export default function App() {
     return () => document.removeEventListener('mousedown', handleClick);
   }, []);
 
-  const filtered = products.filter((p) => {
-    const matchQuery = p.name.toLowerCase().includes(query.toLowerCase());
-    const matchType = type === 'all' || p.type === type;
-    return matchQuery && matchType;
-  });
+  function show(m: string, isErr = false) { setMsg(m); setErr(isErr); }
 
-  const title = tab === 'dashboard' ? 'Prehľad' : 'Trh';
+  async function signIn() {
+    setErr(false);
+    const { error } = await supabase.auth.signInWithPassword({ email, password });
+    if (error) { show(error.message, true); return; }
+    show('Prihlásený');
+  }
+  async function signUp() {
+    setErr(false);
+    const { error } = await supabase.auth.signUp({ email, password });
+    if (error) show(error.message, true);
+    else show('Registrácia odoslaná. Skontroluj e-mail.');
+  }
+  async function signOut() {
+    await supabase.auth.signOut();
+    setUser(null);
+    setClasses([]);
+    setSelectedClass('');
+  }
+
+  async function loadClasses() {
+    const { data, error } = await supabase.from('classes').select('id,name,join_code,simulation_status');
+    if (!error) setClasses(data || []);
+  }
+  async function createClass() {
+    const { data, error } = await supabase.rpc('create_class', { p_name: className });
+    if (error) show(error.message, true);
+    else { show('Trieda vytvorená'); setClassName(''); loadClasses(); }
+  }
+  async function joinClass() {
+    const { error } = await supabase.rpc('join_class', { p_code: joinCode });
+    if (error) show(error.message, true);
+    else { show('Pripojený'); setJoinCode(''); loadClasses(); }
+  }
+  async function setStatus(s: string) {
+    if (!selectedClass) return;
+    const { error } = await supabase.rpc('set_class_status', { p_class_id: selectedClass, p_status: s });
+    if (error) show(error.message, true);
+    else { show(`Stav: ${s}`); loadClasses(); }
+  }
+
+  async function loadProducts() {
+    const { data } = await supabase.from('products').select('id,name').eq('class_id', selectedClass);
+    setProducts(data || []);
+  }
+  async function loadFirms() {
+    const { data } = await supabase.from('firms').select('id,name,cash_balance,status').eq('class_id', selectedClass);
+    setFirms(data || []);
+  }
+  async function loadListings() {
+    const { data } = await supabase.from('listings').select('id,product_id,quantity_available,unit_price,seller_type,products(name)').eq('status', 'active');
+    setListings(data || []);
+  }
+
+  if (loading) return <div className="min-h-screen flex items-center justify-center bg-slate-50">Načítavam…</div>;
+
+  if (!user) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-[#0c1222]">
+        <div className="bg-white p-8 rounded-xl w-full max-w-sm shadow-xl">
+          <h1 className="text-2xl font-semibold mb-1">SimuCorp</h1>
+          <p className="text-sm text-slate-500 mb-6">Prihlásenie</p>
+          <input className="w-full mb-3 px-3 py-2 border rounded-lg text-sm" placeholder="E-mail" value={email} onChange={e => setEmail(e.target.value)} />
+          <input className="w-full mb-4 px-3 py-2 border rounded-lg text-sm" type="password" placeholder="Heslo" value={password} onChange={e => setPassword(e.target.value)} />
+          <div className="flex gap-2">
+            <button onClick={signIn} className="flex-1 bg-blue-600 text-white py-2 rounded-lg text-sm font-medium">Prihlásiť</button>
+            <button onClick={signUp} className="flex-1 border py-2 rounded-lg text-sm">Registrovať</button>
+          </div>
+          {msg && <div className={`mt-4 text-sm p-3 rounded ${err ? 'bg-red-50 text-red-700' : 'bg-green-50 text-green-700'}`}>{msg}</div>}
+        </div>
+      </div>
+    );
+  }
+
+  const title = tab === 'dashboard' ? 'Prehľad' : tab === 'market' ? 'Trh' : 'Triedy';
 
   return (
     <div className="flex min-h-screen bg-slate-50">
-      {/* Sidebar */}
-      <aside className="w-64 bg-[#0c1222] text-slate-300 flex flex-col min-h-screen shrink-0 border-r border-slate-800/60">
+      <aside className="w-64 bg-[#0c1222] text-slate-300 flex flex-col min-h-screen shrink-0">
         <div className="px-5 py-5 flex items-center gap-2.5">
-          <div className="w-7 h-7 rounded-md bg-blue-600 flex items-center justify-center">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2.5">
-              <path d="M3 3v18h18" /><path d="M7 14l4-4 4 4 5-5" />
-            </svg>
-          </div>
-          <span className="font-semibold text-white text-[15px]">SimuCorp</span>
+          <div className="w-7 h-7 rounded-md bg-blue-600 flex items-center justify-center text-white text-xs font-bold">S</div>
+          <span className="font-semibold text-white">SimuCorp</span>
         </div>
         <nav className="flex-1 px-3 py-2 space-y-0.5">
-          <button onClick={() => setTab('dashboard')} className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm font-medium transition ${tab === 'dashboard' ? 'bg-slate-800 text-white' : 'text-slate-300 hover:bg-slate-800/60'}`}>
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
-            Prehľad
-          </button>
-          <button onClick={() => setTab('market')} className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm font-medium transition ${tab === 'market' ? 'bg-slate-800 text-white' : 'text-slate-300 hover:bg-slate-800/60'}`}>
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>
-            Trh
-          </button>
+          <button onClick={() => setTab('classes')} className={`w-full text-left px-3 py-2 rounded-lg text-sm ${tab === 'classes' ? 'bg-slate-800 text-white' : 'hover:bg-slate-800/60'}`}>Triedy</button>
+          <button onClick={() => setTab('dashboard')} className={`w-full text-left px-3 py-2 rounded-lg text-sm ${tab === 'dashboard' ? 'bg-slate-800 text-white' : 'hover:bg-slate-800/60'}`}>Prehľad</button>
+          <button onClick={() => setTab('market')} className={`w-full text-left px-3 py-2 rounded-lg text-sm ${tab === 'market' ? 'bg-slate-800 text-white' : 'hover:bg-slate-800/60'}`}>Trh</button>
         </nav>
-        <div className="px-3 py-3 border-t border-slate-800/60">
-          <button className="w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm text-slate-400 hover:bg-slate-800/50">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
-            Nastavenia
-          </button>
-        </div>
+        <div className="px-4 py-3 text-xs text-slate-500 border-t border-slate-800">{user.email}</div>
       </aside>
 
       <div className="flex-1 flex flex-col min-w-0">
-        {/* TopBar */}
-        <header className="h-14 bg-[#0c1222] border-b border-slate-800/60 flex items-center justify-between px-6 shrink-0">
-          <h1 className="text-white font-medium text-[15px]">{title}</h1>
+        <header className="h-14 bg-[#0c1222] border-b border-slate-800/60 flex items-center justify-between px-6">
+          <h1 className="text-white font-medium">{title}</h1>
           <div className="flex items-center gap-3">
             <div className="relative" ref={notifRef}>
-              <button onClick={() => { setNotifOpen(!notifOpen); setProfileOpen(false); }} className="relative p-1.5 rounded-md hover:bg-slate-800/60 text-slate-400 hover:text-slate-200">
+              <button onClick={() => { setNotifOpen(!notifOpen); setProfileOpen(false); }} className="p-1.5 text-slate-400 hover:text-slate-200 relative">
                 <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>
                 <span className="absolute top-1 right-1 w-2 h-2 bg-red-500 rounded-full" />
               </button>
-              {notifOpen && (
-                <div className="absolute right-0 top-full mt-2 w-72 bg-white rounded-lg shadow-lg border border-slate-200 py-2 z-50">
-                  <div className="px-4 py-2 text-xs font-medium text-slate-500 uppercase">Notifikácie</div>
-                  <div className="px-4 py-3 text-sm text-slate-600 border-t">Žiadne nové notifikácie</div>
-                </div>
-              )}
+              {notifOpen && <div className="absolute right-0 top-full mt-2 w-64 bg-white rounded-lg shadow-lg border p-3 text-sm text-slate-600 z-50">Žiadne notifikácie</div>}
             </div>
             <div className="relative" ref={profileRef}>
               <button onClick={() => { setProfileOpen(!profileOpen); setNotifOpen(false); }} className="flex items-center gap-2 text-slate-400 hover:text-slate-200">
-                <div className="w-7 h-7 rounded-full bg-slate-700 flex items-center justify-center text-xs text-white font-medium">A</div>
-                <span className="hidden sm:inline text-sm">Profil</span>
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="6 9 12 15 18 9"/></svg>
+                <div className="w-7 h-7 rounded-full bg-slate-700 text-white text-xs flex items-center justify-center">{user.email?.[0]?.toUpperCase()}</div>
+                <span className="text-sm hidden sm:inline">Profil</span>
               </button>
               {profileOpen && (
-                <div className="absolute right-0 top-full mt-2 w-48 bg-white rounded-lg shadow-lg border border-slate-200 py-1 z-50">
-                  <button className="w-full text-left px-4 py-2 text-sm text-slate-700 hover:bg-slate-50">Môj účet</button>
-                  <button className="w-full text-left px-4 py-2 text-sm text-slate-700 hover:bg-slate-50">Nastavenia</button>
-                  <div className="border-t my-1" />
-                  <button className="w-full text-left px-4 py-2 text-sm text-rose-600 hover:bg-rose-50">Odhlásiť sa</button>
+                <div className="absolute right-0 top-full mt-2 w-44 bg-white rounded-lg shadow-lg border py-1 z-50">
+                  <button onClick={signOut} className="w-full text-left px-4 py-2 text-sm text-rose-600 hover:bg-rose-50">Odhlásiť sa</button>
                 </div>
               )}
             </div>
@@ -100,99 +179,76 @@ export default function App() {
         </header>
 
         <main className="flex-1 p-6 lg:p-8 overflow-auto">
-          {tab === 'dashboard' ? (
-            <div className="space-y-6">
-              <p className="text-sm text-slate-500">Firma Alfa · Trieda 3.A</p>
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-                <Kpi title="Hotovosť" value={formatEur(kpis.cash)} hint="+4,2 % oproti minulému týždňu" />
-                <Kpi title="Tržby" value={formatEur(kpis.revenue)} hint="Celkové tržby" />
-                <Kpi title="Hodnota zásob" value={formatEur(kpis.inventoryValue)} hint="Vážený priemer" />
-                <Kpi title="Obchody" value={String(kpis.trades)} hint="Dokončené transakcie" />
-              </div>
-              <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-                <div className="lg:col-span-2 bg-white border border-slate-200 rounded-xl p-5 shadow-sm">
-                  <h2 className="text-sm font-medium text-slate-700 mb-4">Vývoj hotovosti</h2>
-                  <div className="h-64">
-                    <ResponsiveContainer width="100%" height="100%">
-                      <LineChart data={cashFlow}>
-                        <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
-                        <XAxis dataKey="month" tick={{ fontSize: 12 }} stroke="#94a3b8" />
-                        <YAxis tick={{ fontSize: 12 }} stroke="#94a3b8" />
-                        <Tooltip formatter={(v: number) => formatEur(v)} />
-                        <Line type="monotone" dataKey="value" stroke="#1d4ed8" strokeWidth={2} dot={false} />
-                      </LineChart>
-                    </ResponsiveContainer>
-                  </div>
-                </div>
-                <div className="bg-white border border-slate-200 rounded-xl p-5 shadow-sm">
-                  <h2 className="text-sm font-medium text-slate-700 mb-4">Rýchle akcie</h2>
-                  <div className="space-y-2">
-                    <button className="w-full text-left px-3 py-2.5 rounded-lg bg-slate-50 hover:bg-slate-100 text-sm font-medium">Vystaviť ponuku</button>
-                    <button className="w-full text-left px-3 py-2.5 rounded-lg bg-slate-50 hover:bg-slate-100 text-sm font-medium">Kúpiť zo systému</button>
-                    <button className="w-full text-left px-3 py-2.5 rounded-lg bg-slate-50 hover:bg-slate-100 text-sm font-medium">Zobraziť sklad</button>
-                    <button onClick={() => setTab('market')} className="w-full text-left px-3 py-2.5 rounded-lg bg-blue-600 text-white text-sm font-medium hover:bg-blue-700">Prejsť na trh</button>
-                  </div>
+          {tab === 'classes' && (
+            <div className="space-y-6 max-w-2xl">
+              <div className="bg-white border rounded-xl p-5 shadow-sm">
+                <h2 className="text-sm font-medium mb-3">Nová trieda</h2>
+                <div className="flex gap-2">
+                  <input value={className} onChange={e => setClassName(e.target.value)} placeholder="Názov triedy" className="flex-1 px-3 py-2 border rounded-lg text-sm" />
+                  <button onClick={createClass} className="bg-blue-600 text-white px-4 py-2 rounded-lg text-sm">Vytvoriť</button>
                 </div>
               </div>
-              <div className="bg-white border border-slate-200 rounded-xl shadow-sm overflow-hidden">
-                <div className="px-5 py-4 border-b border-slate-100"><h2 className="text-sm font-medium text-slate-700">Posledné transakcie</h2></div>
-                <table className="w-full text-sm">
-                  <thead><tr className="text-left text-xs text-slate-500 uppercase border-b"><th className="px-5 py-3">Dátum</th><th className="px-5 py-3">Popis</th><th className="px-5 py-3">Kategória</th><th className="px-5 py-3 text-right">Suma</th></tr></thead>
-                  <tbody>
-                    {transactions.map(t => (
-                      <tr key={t.id} className="border-b border-slate-50 last:border-0 hover:bg-slate-50/60">
-                        <td className="px-5 py-3 text-slate-600">{t.date}</td>
-                        <td className="px-5 py-3 font-medium">{t.description}</td>
-                        <td className="px-5 py-3 text-slate-600">{t.category}</td>
-                        <td className={`px-5 py-3 text-right font-medium ${t.amount >= 0 ? 'text-emerald-600' : 'text-rose-600'}`}>{t.amount >= 0 ? '+' : ''}{formatEur(t.amount)}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
+              <div className="bg-white border rounded-xl p-5 shadow-sm">
+                <h2 className="text-sm font-medium mb-3">Vstúpiť cez kód</h2>
+                <div className="flex gap-2">
+                  <input value={joinCode} onChange={e => setJoinCode(e.target.value)} placeholder="Kód" className="flex-1 px-3 py-2 border rounded-lg text-sm" />
+                  <button onClick={joinClass} className="bg-blue-600 text-white px-4 py-2 rounded-lg text-sm">Vstúpiť</button>
+                </div>
               </div>
-            </div>
-          ) : (
-            <div className="space-y-6">
-              <p className="text-sm text-slate-500">Aktívne ponuky v triede</p>
-              <div className="flex flex-col sm:flex-row gap-3">
-                <input value={query} onChange={e => setQuery(e.target.value)} placeholder="Hľadať produkt…" className="flex-1 px-3 py-2 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-100" />
-                <select value={type} onChange={e => setType(e.target.value as any)} className="px-3 py-2 border border-slate-200 rounded-lg text-sm bg-white">
-                  <option value="all">Všetky</option>
-                  <option value="system">Systémový dodávateľ</option>
-                  <option value="firm">Firmy</option>
+              <div className="bg-white border rounded-xl p-5 shadow-sm">
+                <h2 className="text-sm font-medium mb-3">Moje triedy</h2>
+                <select value={selectedClass} onChange={e => setSelectedClass(e.target.value)} className="w-full px-3 py-2 border rounded-lg text-sm mb-3">
+                  <option value="">— vyber triedu —</option>
+                  {classes.map(c => <option key={c.id} value={c.id}>{c.name} ({c.join_code}) [{c.simulation_status}]</option>)}
                 </select>
-              </div>
-              <div className="bg-white border border-slate-200 rounded-xl shadow-sm overflow-hidden">
-                <table className="w-full text-sm">
-                  <thead><tr className="text-left text-xs text-slate-500 uppercase border-b"><th className="px-5 py-3">Produkt</th><th className="px-5 py-3">Predajca</th><th className="px-5 py-3 text-right">Cena</th><th className="px-5 py-3 text-right">Množstvo</th><th></th></tr></thead>
-                  <tbody>
-                    {filtered.map(p => (
-                      <tr key={p.id} className="border-b border-slate-50 last:border-0 hover:bg-slate-50/60">
-                        <td className="px-5 py-3 font-medium">{p.name}</td>
-                        <td className="px-5 py-3"><span className={`inline-block px-2 py-0.5 rounded text-xs font-medium ${p.type === 'system' ? 'bg-indigo-50 text-indigo-700' : 'bg-emerald-50 text-emerald-700'}`}>{p.seller}</span></td>
-                        <td className="px-5 py-3 text-right font-medium">{formatEur(p.price)}</td>
-                        <td className="px-5 py-3 text-right text-slate-600">{p.quantity} ks</td>
-                        <td className="px-5 py-3 text-right"><button className="text-sm font-medium text-blue-600 hover:text-blue-800">Kúpiť</button></td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-                {filtered.length === 0 && <div className="px-5 py-8 text-center text-sm text-slate-400">Žiadne výsledky.</div>}
+                {selectedClass && (
+                  <div className="flex gap-2">
+                    <button onClick={() => setStatus('running')} className="text-sm border px-3 py-1.5 rounded">Spustiť</button>
+                    <button onClick={() => setStatus('paused')} className="text-sm border px-3 py-1.5 rounded">Pozastaviť</button>
+                    <button onClick={() => setStatus('archived')} className="text-sm border px-3 py-1.5 rounded">Archivovať</button>
+                  </div>
+                )}
+                {classes.length === 0 && <p className="text-sm text-slate-400">Žiadne triedy.</p>}
               </div>
             </div>
           )}
+
+          {tab === 'dashboard' && (
+            <div className="space-y-6">
+              <p className="text-sm text-slate-500">{selectedClass ? 'Vybraná trieda' : 'Vyber triedu v záložke Triedy'}</p>
+              {selectedClass && firms.length > 0 && (
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+                  <div className="bg-white border rounded-xl p-5 shadow-sm">
+                    <div className="text-xs text-slate-500 uppercase">Hotovosť</div>
+                    <div className="text-2xl font-semibold mt-1">{formatEur(firms[0]?.cash_balance || 0)}</div>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {tab === 'market' && selectedClass && (
+            <div className="bg-white border rounded-xl shadow-sm overflow-hidden">
+              <table className="w-full text-sm">
+                <thead><tr className="text-left text-xs text-slate-500 uppercase border-b"><th className="px-5 py-3">Produkt</th><th className="px-5 py-3 text-right">Cena</th><th className="px-5 py-3 text-right">Množstvo</th><th className="px-5 py-3">Typ</th></tr></thead>
+                <tbody>
+                  {listings.map(l => (
+                    <tr key={l.id} className="border-b last:border-0">
+                      <td className="px-5 py-3">{l.products?.name || '—'}</td>
+                      <td className="px-5 py-3 text-right">{l.unit_price}</td>
+                      <td className="px-5 py-3 text-right">{l.quantity_available}</td>
+                      <td className="px-5 py-3">{l.seller_type}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              {listings.length === 0 && <div className="p-5 text-sm text-slate-400">Žiadne ponuky.</div>}
+            </div>
+          )}
+
+          {msg && <div className={`mt-4 text-sm p-3 rounded ${err ? 'bg-red-50 text-red-700' : 'bg-green-50 text-green-700'}`}>{msg}</div>}
         </main>
       </div>
-    </div>
-  );
-}
-
-function Kpi({ title, value, hint }: { title: string; value: string; hint: string }) {
-  return (
-    <div className="bg-white border border-slate-200 rounded-xl p-5 shadow-sm">
-      <div className="text-xs font-medium text-slate-500 uppercase tracking-wide">{title}</div>
-      <div className="mt-2 text-2xl font-semibold">{value}</div>
-      <div className="mt-1 text-xs text-slate-400">{hint}</div>
     </div>
   );
 }
